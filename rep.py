@@ -287,10 +287,10 @@ Label(root, text="Soglia volo (N)").grid(row=2, column=0)
 soglia_entry = Entry(root); soglia_entry.insert(0,"5"); soglia_entry.grid(row=2, column=1)
 
 Label(root, text="Durata minima volo (s)").grid(row=3, column=0)
-durata_entry = Entry(root); durata_entry.insert(0,"0.5"); durata_entry.grid(row=3, column=1)
+durata_entry = Entry(root); durata_entry.insert(0,"0.2"); durata_entry.grid(row=3, column=1)
 
 Label(root, text="Peso soggetto (kg)").grid(row=4, column=0)
-massa_entry = Entry(root); massa_entry.insert(0,"66"); massa_entry.grid(row=4, column=1)
+massa_entry = Entry(root); massa_entry.insert(0,"75"); massa_entry.grid(row=4, column=1)
 
 Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, pady=5)
 Button(root, text="Esporta PDF/CSV", command=export_results).grid(row=5, column=1, pady=5)
