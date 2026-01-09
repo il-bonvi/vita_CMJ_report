@@ -21,11 +21,12 @@ def preprocess(df, offset_sx=0, offset_dx=0, soglia_contatto=3):
     df["pedana_sinistra_cor"] = (df["pedana_sinistra"] - offset_sx).clip(lower=0)
     df["pedana_destra_cor"]   = (df["pedana_destra"] - offset_dx).clip(lower=0)
 
+    # normalizza a 0 quando sotto soglia_contatto
     df["pedana_sinistra_cor"] = df["pedana_sinistra_cor"].where(df["pedana_sinistra_cor"]>soglia_contatto, 0)
     df["pedana_destra_cor"]   = df["pedana_destra_cor"].where(df["pedana_destra_cor"]>soglia_contatto, 0)
 
     df["forza_tot"] = df["pedana_sinistra_cor"] + df["pedana_destra_cor"]
-    df['time_s'] = df['time'] / 1000  # ms -> s
+    df['time_s'] = df['time'] / 1000  # ms -> s per calcoli interni
     return df
 
 
@@ -67,12 +68,15 @@ def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, m
 
     df = detect_flight_phase(df, soglia_volo, durata_min)
 
+    # onset fase eccentrica
     onset_idx = df[df['forza_filt'] < baseline - delta].index
     idx_onset = onset_idx[0] if len(onset_idx)>0 else 0
 
+    # fase spinta
     mask_spinta = (df.index > idx_onset) & (df['forza_filt'] > baseline + delta)
     idx_spinta = df.index[mask_spinta][0] if mask_spinta.any() else idx_onset
 
+    # take-off
     mask_takeoff = (df.index > idx_spinta) & (df['forza_filt'] < soglia_volo)
     idx_takeoff = df.index[mask_takeoff][0] if mask_takeoff.any() else df.index[-1]
 
@@ -136,76 +140,62 @@ def run_analysis():
     print(f"Altezza salto: {cmj['altezza']:.3f} m")
     print(f"Asimmetria media: {cmj['asimmetria_media']:.2f} %")
 
-    # Selezione file PDF
-    pdf_file = filedialog.asksaveasfilename(defaultextension='.pdf', filetypes=[('PDF files','*.pdf')])
-    if pdf_file:
-        with PdfPages(pdf_file) as pdf:
-            df_plot = cmj['df']
+    pdf_file = file_path.replace('.txt','_report.pdf')
+    with PdfPages(pdf_file) as pdf:
+        df_plot = cmj['df']
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
-            plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Forza (N)')
-            plt.title('Forza Totale e volo')
-            plt.legend()
-            pdf.savefig(); plt.close()
+        # Forza Totale
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
+        plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Forza (N)')
+        plt.title('Forza Totale e volo')
+        plt.legend()
+        pdf.savefig(); plt.close()
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
-            plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Forza (N)')
-            plt.title('Forza Pedane')
-            plt.legend()
-            pdf.savefig(); plt.close()
+        # Pedane SX/DX
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
+        plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Forza (N)')
+        plt.title('Forza Pedane')
+        plt.legend()
+        pdf.savefig(); plt.close()
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['asimmetria_%'], label='Asimmetria (%)')
-            plt.axhline(0, linestyle='--', color='black')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Asimmetria (%)')
-            plt.title('Asimmetria Destra-Sinistra')
-            plt.legend()
-            pdf.savefig(); plt.close()
+        # Asimmetria
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['time'], df_plot['asimmetria_%'], label='Asimmetria (%)')
+        plt.axhline(0, linestyle='--', color='black')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Asimmetria (%)')
+        plt.title('Asimmetria Destra-Sinistra')
+        plt.legend()
+        pdf.savefig(); plt.close()
 
-            fig, ax = plt.subplots(figsize=(10,6))
-            ax.axis('off')
-            ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
-            cmj_data = [
-                ['Parametro', 'Valore'],
-                ['Tempo eccentrico (s)', f"{cmj['tempo_eccentrico']:.3f}"],
-                ['Tempo spinta (s)', f"{cmj['tempo_spinta']:.3f}"],
-                ['Tempo volo (s)', f"{cmj['tempo_volo']:.3f}"],
-                ['Fmax (N)', f"{cmj['Fmax']:.1f}"],
-                ['Impulso (N·s)', f"{cmj['impulso']:.2f}"],
-                ['Pmax (W)', f"{cmj['Pmax']:.1f}"],
-                ['Altezza salto (m)', f"{cmj['altezza']:.3f}"],
-                ['Asimmetria media (%)', f"{cmj['asimmetria_media']:.2f}"]
-            ]
-            table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
-            table.auto_set_font_size(False)
-            table.set_fontsize(14)
-            table.scale(1.5, 2)
-            pdf.savefig(); plt.close()
+        # Tabella parametri
+        fig, ax = plt.subplots(figsize=(10,6))
+        ax.axis('off')
+        ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
+        cmj_data = [
+            ['Parametro', 'Valore'],
+            ['Tempo eccentrico (s)', f"{cmj['tempo_eccentrico']:.3f}"],
+            ['Tempo spinta (s)', f"{cmj['tempo_spinta']:.3f}"],
+            ['Tempo volo (s)', f"{cmj['tempo_volo']:.3f}"],
+            ['Fmax (N)', f"{cmj['Fmax']:.1f}"],
+            ['Impulso (N·s)', f"{cmj['impulso']:.2f}"],
+            ['Pmax (W)', f"{cmj['Pmax']:.1f}"],
+            ['Altezza salto (m)', f"{cmj['altezza']:.3f}"],
+            ['Asimmetria media (%)', f"{cmj['asimmetria_media']:.2f}"]
+        ]
+        table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
+        table.auto_set_font_size(False)
+        table.set_fontsize(14)
+        table.scale(1.5, 2)
+        pdf.savefig(); plt.close()
 
-    # Selezione file CSV
-    csv_file = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV files','*.csv')])
-    if csv_file:
-        cmj_df = pd.DataFrame({
-            'Parametro': ['Tempo eccentrico (s)', 'Tempo spinta (s)', 'Tempo volo (s)', 'Fmax (N)', 'Impulso (N·s)', 'Pmax (W)', 'Altezza salto (m)', 'Asimmetria media (%)'],
-            'Valore': [
-                f"{cmj['tempo_eccentrico']:.3f}",
-                f"{cmj['tempo_spinta']:.3f}",
-                f"{cmj['tempo_volo']:.3f}",
-                f"{cmj['Fmax']:.1f}",
-                f"{cmj['impulso']:.2f}",
-                f"{cmj['Pmax']:.1f}",
-                f"{cmj['altezza']:.3f}",
-                f"{cmj['asimmetria_media']:.2f}"
-            ]
-        })
-        cmj_df.to_csv(csv_file, index=False)
+    print(f"Report PDF generato: {pdf_file}")
 
 # ============================
 # CREAZIONE GUI
