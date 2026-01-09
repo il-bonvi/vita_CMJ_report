@@ -7,6 +7,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import os
 
 # ============================
+# VARIABILI GLOBALI
+# ============================
+cmj_global = None
+file_global = None
+soglia_volo_global = 5
+
+# ============================
 # FUNZIONI DI CALCOLO
 # ============================
 
@@ -127,6 +134,7 @@ def update_plots(cmj, soglia_volo_val):
     canvas.get_tk_widget().pack()
 
 def run_analysis():
+    global cmj_global, file_global, soglia_volo_global
     file_path = filedialog.askopenfilename(filetypes=[("Text files","*.txt")])
     if not file_path: return
     try:
@@ -142,7 +150,14 @@ def run_analysis():
     df = load_pedana(file_path)
     df = preprocess(df, offset_sx_val, offset_dx_val)
     cmj = analyze_cmj_force(df, soglia_volo=soglia_volo_val, durata_min=durata_min_val, massa=massa_val)
+    cmj['massa'] = massa_val
 
+    # Salva nei globali
+    cmj_global = cmj
+    file_global = file_path
+    soglia_volo_global = soglia_volo_val
+
+    # Preview GUI
     preview_text.delete("1.0", "end")
     preview_text.insert("end", f"File: {os.path.basename(file_path)}\n\n")
     preview_text.insert("end", f"Tempo eccentrico (s): {cmj['tempo_eccentrico']:.3f}\n")
@@ -152,10 +167,17 @@ def run_analysis():
     preview_text.insert("end", f"Impulso (N·s): {cmj['impulso']:.1f}\n")
     preview_text.insert("end", f"Pmax (W): {cmj['Pmax']:.0f}\n")
     preview_text.insert("end", f"Altezza salto (m): {cmj['altezza']:.3f}\n")
+    preview_text.insert("end", f"Massa soggetto (kg): {cmj['massa']:.1f}\n")
 
     update_plots(cmj, soglia_volo_val)
 
-    base_name = os.path.splitext(os.path.basename(file_path))[0]
+def export_results():
+    global cmj_global, file_global, soglia_volo_global
+    if cmj_global is None:
+        print("Nessun dato da esportare! Prima esegui un'analisi.")
+        return
+
+    base_name = os.path.splitext(os.path.basename(file_global))[0]
 
     pdf_file = filedialog.asksaveasfilename(
         defaultextension=".pdf",
@@ -169,13 +191,13 @@ def run_analysis():
     )
     if not pdf_file or not csv_file: return
 
+    df_plot = cmj_global['df']
+
     # ================= PDF
     with PdfPages(pdf_file) as pdf:
-        df_plot = cmj['df']
-
         plt.figure(figsize=(8,5))
         plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
-        plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+        plt.axhline(soglia_volo_global, color='red', linestyle='--', label='Soglia volo')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
         plt.title('Forza Totale e volo')
@@ -184,8 +206,8 @@ def run_analysis():
         pdf.savefig(); plt.close()
 
         plt.figure(figsize=(8,5))
-        plt.plot(df_plot['pedana_sinistra_cor'], label='SX')
-        plt.plot(df_plot['pedana_destra_cor'], label='DX')
+        plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
+        plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
         plt.title('Forza Pedane')
@@ -197,16 +219,16 @@ def run_analysis():
         ax.axis('off')
         ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
         cmj_data = [
-        ['Parametro', 'Valore'],
-        ['Tempo eccentrico (s)', f"{cmj['tempo_eccentrico']:.3f}"],
-        ['Tempo spinta (s)', f"{cmj['tempo_spinta']:.3f}"],
-        ['Tempo volo (s)', f"{cmj['tempo_volo']:.3f}"],
-        ['Fmax (N)', f"{cmj['Fmax']:.0f}"],
-        ['Impulso (N·s)', f"{cmj['impulso']:.1f}"],
-        ['Pmax (W)', f"{cmj['Pmax']:.0f}"],
-        ['Altezza salto (m)', f"{cmj['altezza']:.3f}"],
-        ['Massa soggetto (kg)', f"{cmj['massa']:.1f}"]  # <-- aggiunta
-    ]
+            ['Parametro', 'Valore'],
+            ['Tempo eccentrico (s)', f"{cmj_global['tempo_eccentrico']:.3f}"],
+            ['Tempo spinta (s)', f"{cmj_global['tempo_spinta']:.3f}"],
+            ['Tempo volo (s)', f"{cmj_global['tempo_volo']:.3f}"],
+            ['Fmax (N)', f"{cmj_global['Fmax']:.0f}"],
+            ['Impulso (N·s)', f"{cmj_global['impulso']:.1f}"],
+            ['Pmax (W)', f"{cmj_global['Pmax']:.0f}"],
+            ['Altezza salto (m)', f"{cmj_global['altezza']:.3f}"],
+            ['Massa soggetto (kg)', f"{cmj_global['massa']:.1f}"]
+        ]
         table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
         table.auto_set_font_size(False)
         table.set_fontsize(14)
@@ -216,10 +238,10 @@ def run_analysis():
     # ================= CSV
     df_csv = pd.DataFrame({
         'Parametro': ['Tempo eccentrico (s)','Tempo spinta (s)','Tempo volo (s)','Fmax (N)',
-                    'Impulso (N·s)','Pmax (W)','Altezza salto (m)','Massa soggetto (kg)'],  # <-- aggiunta
-        'Valore': [f"{cmj['tempo_eccentrico']:.3f}", f"{cmj['tempo_spinta']:.3f}", f"{cmj['tempo_volo']:.3f}",
-                f"{cmj['Fmax']:.0f}", f"{cmj['impulso']:.1f}", f"{cmj['Pmax']:.0f}",
-                f"{cmj['altezza']:.3f}", f"{cmj['massa']:.1f}"]  # <-- aggiunta
+                      'Impulso (N·s)','Pmax (W)','Altezza salto (m)','Massa soggetto (kg)'],
+        'Valore': [f"{cmj_global['tempo_eccentrico']:.3f}", f"{cmj_global['tempo_spinta']:.3f}", f"{cmj_global['tempo_volo']:.3f}",
+                   f"{cmj_global['Fmax']:.0f}", f"{cmj_global['impulso']:.1f}", f"{cmj_global['Pmax']:.0f}",
+                   f"{cmj_global['altezza']:.3f}", f"{cmj_global['massa']:.1f}"]
     })
     df_csv.to_csv(csv_file, index=False)
     print(f"Report PDF generato: {pdf_file}")
@@ -247,7 +269,8 @@ durata_entry = Entry(root); durata_entry.insert(0,"0.5"); durata_entry.grid(row=
 Label(root, text="Peso soggetto (kg)").grid(row=4, column=0)
 massa_entry = Entry(root); massa_entry.insert(0,"66"); massa_entry.grid(row=4, column=1)
 
-Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, columnspan=2, pady=5)
+Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, pady=5)
+Button(root, text="Esporta PDF/CSV", command=export_results).grid(row=5, column=1, pady=5)
 
 preview_text = Text(root, height=10, width=50)
 preview_text.grid(row=6, column=0, columnspan=2, pady=5)
