@@ -50,63 +50,32 @@ def detect_flight_phase(df, soglia=5, durata_min=0.5):
         df.loc[start_idx:len(df)-1, 'in_volo'] = True
     return df
 
-def compute_flight_times(df):
-    intervals = []
-    in_volo = df['in_volo'].values
-    start = None
-    for i, val in enumerate(in_volo):
-        if val and start is None:
-            start = i
-        elif not val and start is not None:
-            intervals.append((start, i-1))
-            start = None
-    if start is not None:
-        intervals.append((start, len(df)-1))
-    return [(df['time_s'].iloc[end] - df['time_s'].iloc[start]) for start,end in intervals]
-
-def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, massa=66, finestra_media=3):
+def analyze_cmj_force(df, soglia_volo=5, durata_min=0.5, massa=66, finestra_media=3):
     df = df.copy()
     df['forza_filt'] = df['forza_tot'].rolling(finestra_media, center=True, min_periods=1).mean()
     df = detect_flight_phase(df, soglia_volo, durata_min)
 
-    onset_idx = df[df['forza_filt'] < baseline - delta].index
-    idx_onset = onset_idx[0] if len(onset_idx) > 0 else 0
+    # Take-off: primo indice in volo
+    takeoff_idx = df.index[df['in_volo']].min()
+    takeoff_time = df.loc[takeoff_idx, 'time_s'] if not np.isnan(takeoff_idx) else df['time_s'].iloc[-1]
 
-    mask_spinta = (df.index > idx_onset) & (df['forza_filt'] > baseline + delta)
-    idx_spinta = df.index[mask_spinta][0] if mask_spinta.any() else idx_onset
+    # Landing: ultimo indice in volo
+    landing_idx = df.index[df['in_volo']].max()
+    landing_time = df.loc[landing_idx, 'time_s'] if not np.isnan(landing_idx) else df['time_s'].iloc[-1]
 
-    mask_takeoff = (df.index > idx_spinta) & (df['forza_filt'] < soglia_volo)
-    idx_takeoff = df.index[mask_takeoff][0] if mask_takeoff.any() else df.index[-1]
-
-    tempo_ecc = df.loc[idx_spinta, 'time_s'] - df.loc[idx_onset, 'time_s']
-    tempo_spinta = df.loc[idx_takeoff, 'time_s'] - df.loc[idx_spinta, 'time_s']
-
-    flight_times = compute_flight_times(df)
-    tempo_volo = flight_times[0] if flight_times else 0
-
-    Fmax = df.loc[idx_spinta:idx_takeoff, 'forza_filt'].max()
-    impulso = np.trapz(df.loc[idx_spinta:idx_takeoff, 'forza_filt'] - baseline,
-                        df.loc[idx_spinta:idx_takeoff, 'time_s'])
-    Pmax = Fmax * (impulso / massa) / tempo_spinta if tempo_spinta > 0 else 0
-    h = (9.81 * tempo_volo**2) / 8
-
-    # Calcolo asimmetria media concentrica
-    df_conc = df.loc[idx_spinta:idx_takeoff].copy()
-    df_conc['asimmetria'] = np.abs(df_conc['pedana_sinistra_cor'] - df_conc['pedana_destra_cor']) / \
-                            (df_conc['pedana_sinistra_cor'] + df_conc['pedana_destra_cor'] + 1e-6) * 100
-    asimmetria_media = df_conc['asimmetria'].mean()
+    # Picco di forza prima del take-off
+    df_pre_takeoff = df[df.index <= takeoff_idx]
+    Fmax = df_pre_takeoff['forza_filt'].max()
+    idx_peak = df_pre_takeoff['forza_filt'].idxmax()
+    peak_time = df_pre_takeoff.loc[idx_peak, 'time_s']
 
     return {
-        'tempo_eccentrico': tempo_ecc,
-        'tempo_spinta': tempo_spinta,
-        'tempo_volo': tempo_volo,
         'Fmax': Fmax,
-        'impulso': impulso,
-        'Pmax': Pmax,
-        'altezza': h,
+        'peak_time': peak_time,
+        'takeoff_time': takeoff_time,
+        'landing_time': landing_time,
         'df': df,
-        'df_conc': df_conc,
-        'asimmetria_media': asimmetria_media
+        'massa': massa
     }
 
 # ============================
@@ -122,6 +91,9 @@ def update_plots(cmj, soglia_volo_val):
 
     axes[0].plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
     axes[0].axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+    axes[0].axvline(cmj['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
+    axes[0].axvline(cmj['landing_time']*1000, color='orange', linestyle='--', label='Landing')
+    axes[0].scatter(cmj['peak_time']*1000, cmj['Fmax'], color='blue', zorder=5, label='Fmax (pre take-off)')
     axes[0].set_xlabel('Tempo (ms)')
     axes[0].set_ylabel('Forza (N)')
     axes[0].set_title('Forza Totale e volo')
@@ -158,9 +130,7 @@ def run_analysis():
     df = load_pedana(file_path)
     df = preprocess(df, offset_sx_val, offset_dx_val)
     cmj = analyze_cmj_force(df, soglia_volo=soglia_volo_val, durata_min=durata_min_val, massa=massa_val)
-    cmj['massa'] = massa_val
 
-    # Salva nei globali
     cmj_global = cmj
     file_global = file_path
     soglia_volo_global = soglia_volo_val
@@ -168,15 +138,11 @@ def run_analysis():
     # Preview GUI
     preview_text.delete("1.0", "end")
     preview_text.insert("end", f"File: {os.path.basename(file_path)}\n\n")
-    preview_text.insert("end", f"Tempo eccentrico (s): {cmj['tempo_eccentrico']:.3f}\n")
-    preview_text.insert("end", f"Tempo spinta (s): {cmj['tempo_spinta']:.3f}\n")
-    preview_text.insert("end", f"Tempo volo (s): {cmj['tempo_volo']:.3f}\n")
     preview_text.insert("end", f"Fmax (N): {cmj['Fmax']:.0f}\n")
-    preview_text.insert("end", f"Impulso (N·s): {cmj['impulso']:.1f}\n")
-    preview_text.insert("end", f"Pmax (W): {cmj['Pmax']:.0f}\n")
-    preview_text.insert("end", f"Altezza salto (m): {cmj['altezza']:.3f}\n")
+    preview_text.insert("end", f"Tempo picco forza (s): {cmj['peak_time']:.3f}\n")
+    preview_text.insert("end", f"Take-off (s): {cmj['takeoff_time']:.3f}\n")
+    preview_text.insert("end", f"Landing (s): {cmj['landing_time']:.3f}\n")
     preview_text.insert("end", f"Massa soggetto (kg): {cmj['massa']:.1f}\n")
-    preview_text.insert("end", f"Asimmetria media concentrica (%): {cmj['asimmetria_media']:.2f}\n")
 
     update_plots(cmj, soglia_volo_val)
 
@@ -201,14 +167,14 @@ def export_results():
     if not pdf_file or not csv_file: return
 
     df_plot = cmj_global['df']
-    df_conc = cmj_global['df_conc']
 
     # ================= PDF
     with PdfPages(pdf_file) as pdf:
-        # 1) Forza totale e soglia volo
         plt.figure(figsize=(8,5))
         plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
         plt.axhline(soglia_volo_global, color='red', linestyle='--', label='Soglia volo')
+        plt.axvline(cmj_global['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
+        plt.axvline(cmj_global['landing_time']*1000, color='orange', linestyle='--', label='Landing')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
         plt.title('Forza Totale e volo')
@@ -216,7 +182,6 @@ def export_results():
         plt.ylim(bottom=0)
         pdf.savefig(); plt.close()
 
-        # 2) Forza pedane SX/DX
         plt.figure(figsize=(8,5))
         plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
         plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
@@ -227,29 +192,14 @@ def export_results():
         plt.ylim(bottom=0)
         pdf.savefig(); plt.close()
 
-        # 3) Asimmetria media concentrica
-        plt.figure(figsize=(8,5))
-        plt.plot(df_conc['time_s'], df_conc['asimmetria'], color='purple', label='Asimmetria (%)')
-        plt.xlabel('Tempo (s)')
-        plt.ylabel('Asimmetria (%)')
-        plt.title('Asimmetria Media Concentrica')
-        plt.ylim(0, max(df_conc['asimmetria'].max()*1.1, 10))
-        plt.legend()
-        pdf.savefig(); plt.close()
-
-        # 4) Tabella parametri CMJ
         fig, ax = plt.subplots(figsize=(10,6))
         ax.axis('off')
         ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
         cmj_data = [
-            ['Tempo eccentrico (s)', f"{cmj_global['tempo_eccentrico']:.3f}"],
-            ['Tempo spinta (s)', f"{cmj_global['tempo_spinta']:.3f}"],
-            ['Tempo volo (s)', f"{cmj_global['tempo_volo']:.3f}"],
             ['Fmax (N)', f"{cmj_global['Fmax']:.0f}"],
-            ['Impulso (N·s)', f"{cmj_global['impulso']:.1f}"],
-            ['Pmax (W)', f"{cmj_global['Pmax']:.0f}"],
-            ['Altezza salto (m)', f"{cmj_global['altezza']:.3f}"],
-            ['Asimmetria media concentrica (%)', f"{cmj_global['asimmetria_media']:.2f}"],
+            ['Tempo picco forza (s)', f"{cmj_global['peak_time']:.3f}"],
+            ['Take-off (s)', f"{cmj_global['takeoff_time']:.3f}"],
+            ['Landing (s)', f"{cmj_global['landing_time']:.3f}"],
             ['Massa soggetto (kg)', f"{cmj_global['massa']:.1f}"]
         ]
         table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
@@ -260,11 +210,9 @@ def export_results():
 
     # ================= CSV
     df_csv = pd.DataFrame({
-        'Parametro': ['Tempo eccentrico (s)','Tempo spinta (s)','Tempo volo (s)','Fmax (N)',
-                      'Impulso (N·s)','Pmax (W)','Altezza salto (m)','Massa soggetto (kg)','Asimmetria media concentrica (%)'],
-        'Valore': [f"{cmj_global['tempo_eccentrico']:.3f}", f"{cmj_global['tempo_spinta']:.3f}", f"{cmj_global['tempo_volo']:.3f}",
-                   f"{cmj_global['Fmax']:.0f}", f"{cmj_global['impulso']:.1f}", f"{cmj_global['Pmax']:.0f}",
-                   f"{cmj_global['altezza']:.3f}", f"{cmj_global['massa']:.1f}", f"{cmj_global['asimmetria_media']:.2f}"]
+        'Parametro': ['Fmax (N)','Tempo picco forza (s)','Take-off (s)','Landing (s)','Massa soggetto (kg)'],
+        'Valore': [f"{cmj_global['Fmax']:.0f}", f"{cmj_global['peak_time']:.3f}",
+                  f"{cmj_global['takeoff_time']:.3f}", f"{cmj_global['landing_time']:.3f}", f"{cmj_global['massa']:.1f}"]
     })
     df_csv.to_csv(csv_file, index=False)
     print(f"Report PDF generato: {pdf_file}")
@@ -295,7 +243,7 @@ massa_entry = Entry(root); massa_entry.insert(0,"75"); massa_entry.grid(row=4, c
 Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, pady=5)
 Button(root, text="Esporta PDF/CSV", command=export_results).grid(row=5, column=1, pady=5)
 
-preview_text = Text(root, height=12, width=50)
+preview_text = Text(root, height=10, width=50)
 preview_text.grid(row=6, column=0, columnspan=2, pady=5)
 
 plot_frame = Frame(root)
