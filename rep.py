@@ -16,29 +16,33 @@ def load_pedana(file):
     return df
 
 
-def preprocess(df, offset_sx=0, offset_dx=0):
+def preprocess(df, offset_sx=0, offset_dx=0, soglia_contatto=3):
     df = df.copy()
-    df["pedana_sinistra_cor"] = df["pedana_sinistra"] - offset_sx
-    df["pedana_destra_cor"] = df["pedana_destra"] - offset_dx
+    df["pedana_sinistra_cor"] = (df["pedana_sinistra"] - offset_sx).clip(lower=0)
+    df["pedana_destra_cor"]   = (df["pedana_destra"] - offset_dx).clip(lower=0)
+
+    # normalizza a 0 quando sotto soglia_contatto
+    df["pedana_sinistra_cor"] = df["pedana_sinistra_cor"].where(df["pedana_sinistra_cor"]>soglia_contatto, 0)
+    df["pedana_destra_cor"]   = df["pedana_destra_cor"].where(df["pedana_destra_cor"]>soglia_contatto, 0)
+
     df["forza_tot"] = df["pedana_sinistra_cor"] + df["pedana_destra_cor"]
-    df["forza_tot"] = df["forza_tot"].clip(lower=0)
+    df['time_s'] = df['time'] / 1000  # ms -> s per calcoli interni
     return df
 
 
 def detect_flight_phase(df, soglia=5, durata_min=0.5):
     df = df.copy()
     df['in_volo'] = False
-    time_sec = df['time'] / 1000  # assume ms input
-    in_volo = (df['forza_tot'] < soglia)
+    in_volo = df['forza_tot'] < soglia
     start_idx = None
     for i, val in enumerate(in_volo):
         if val and start_idx is None:
             start_idx = i
         elif not val and start_idx is not None:
-            if time_sec[i-1] - time_sec[start_idx] >= durata_min:
+            if df['time_s'].iloc[i-1] - df['time_s'].iloc[start_idx] >= durata_min:
                 df.loc[start_idx:i-1, 'in_volo'] = True
             start_idx = None
-    if start_idx is not None and time_sec[len(df)-1] - time_sec[start_idx] >= durata_min:
+    if start_idx is not None and df['time_s'].iloc[-1] - df['time_s'].iloc[start_idx] >= durata_min:
         df.loc[start_idx:len(df)-1, 'in_volo'] = True
     return df
 
@@ -55,39 +59,44 @@ def compute_flight_times(df):
             start = None
     if start is not None:
         intervals.append((start, len(df)-1))
-    times = [(df['time'].iloc[end] - df['time'].iloc[start])/1000 for start,end in intervals]
-    return times
+    return [(df['time_s'].iloc[end] - df['time_s'].iloc[start]) for start,end in intervals]
 
 
 def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, massa=66, finestra_media=3):
     df = df.copy()
-    if df['time'].max() > 100:
-        df['time'] = df['time'] / 1000
     df['forza_filt'] = df['forza_tot'].rolling(finestra_media, center=True, min_periods=1).mean()
 
     df = detect_flight_phase(df, soglia_volo, durata_min)
 
-    idx_onset = df[df['forza_filt'] < baseline - delta].index[0]
-    idx_spinta = df[df.index > idx_onset][df['forza_filt'] > baseline + delta].index[0]
-    idx_takeoff = df[df.index > idx_spinta][df['forza_filt'] < soglia_volo].index[0]
+    # onset fase eccentrica
+    onset_idx = df[df['forza_filt'] < baseline - delta].index
+    idx_onset = onset_idx[0] if len(onset_idx)>0 else 0
 
-    tempo_ecc = df.loc[idx_spinta, 'time'] - df.loc[idx_onset, 'time']
-    tempo_spinta = df.loc[idx_takeoff, 'time'] - df.loc[idx_spinta, 'time']
+    # fase spinta
+    mask_spinta = (df.index > idx_onset) & (df['forza_filt'] > baseline + delta)
+    idx_spinta = df.index[mask_spinta][0] if mask_spinta.any() else idx_onset
+
+    # take-off
+    mask_takeoff = (df.index > idx_spinta) & (df['forza_filt'] < soglia_volo)
+    idx_takeoff = df.index[mask_takeoff][0] if mask_takeoff.any() else df.index[-1]
+
+    tempo_ecc = df.loc[idx_spinta, 'time_s'] - df.loc[idx_onset, 'time_s']
+    tempo_spinta = df.loc[idx_takeoff, 'time_s'] - df.loc[idx_spinta, 'time_s']
 
     flight_times = compute_flight_times(df)
     tempo_volo = flight_times[0] if flight_times else 0
 
     Fmax = df.loc[idx_spinta:idx_takeoff, 'forza_filt'].max()
     impulso = np.trapz(df.loc[idx_spinta:idx_takeoff, 'forza_filt'] - baseline,
-                        df.loc[idx_spinta:idx_takeoff, 'time'])
-    Pmax = Fmax * (impulso / massa) / tempo_spinta
+                        df.loc[idx_spinta:idx_takeoff, 'time_s'])
+    Pmax = Fmax * (impulso / massa) / tempo_spinta if tempo_spinta>0 else 0
 
     h = (9.81 * tempo_volo**2) / 8
 
     df['asimmetria_%'] = 100 * (df['pedana_destra_cor'] - df['pedana_sinistra_cor']) / (
-        0.5 * (df['pedana_destra_cor'] + df['pedana_sinistra_cor'])
-    )
-    asim_media = df[df['forza_tot'] > 3]['asimmetria_%'].mean()
+        0.5*(df['pedana_destra_cor'] + df['pedana_sinistra_cor']) + 1e-6)
+    df['asimmetria_%'] = df['asimmetria_%'].where(df['forza_tot']>3,0)
+    asim_media = df[df['forza_tot']>3]['asimmetria_%'].mean()
 
     return {
         'tempo_eccentrico': tempo_ecc,
@@ -106,9 +115,8 @@ def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, m
 # ============================
 
 def run_analysis():
-    file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
-    if not file_path:
-        return
+    file_path = filedialog.askopenfilename(filetypes=[("Text files","*.txt")])
+    if not file_path: return
 
     try:
         offset_sx_val = float(offset_sx_entry.get())
@@ -142,10 +150,9 @@ def run_analysis():
         plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
-        plt.legend()
         plt.title('Forza Totale e volo')
-        pdf.savefig()
-        plt.close()
+        plt.legend()
+        pdf.savefig(); plt.close()
 
         # Pedane SX/DX
         plt.figure(figsize=(8,5))
@@ -155,8 +162,7 @@ def run_analysis():
         plt.ylabel('Forza (N)')
         plt.title('Forza Pedane')
         plt.legend()
-        pdf.savefig()
-        plt.close()
+        pdf.savefig(); plt.close()
 
         # Asimmetria
         plt.figure(figsize=(8,5))
@@ -166,8 +172,7 @@ def run_analysis():
         plt.ylabel('Asimmetria (%)')
         plt.title('Asimmetria Destra-Sinistra')
         plt.legend()
-        pdf.savefig()
-        plt.close()
+        pdf.savefig(); plt.close()
 
         # Tabella parametri
         fig, ax = plt.subplots(figsize=(10,6))
@@ -188,8 +193,7 @@ def run_analysis():
         table.auto_set_font_size(False)
         table.set_fontsize(14)
         table.scale(1.5, 2)
-        pdf.savefig()
-        plt.close()
+        pdf.savefig(); plt.close()
 
     print(f"Report PDF generato: {pdf_file}")
 
@@ -200,25 +204,16 @@ root = Tk()
 root.title("CMJ Analysis")
 
 Label(root, text="Offset pedana SX").grid(row=0, column=0)
-offset_sx_entry = Entry(root)
-offset_sx_entry.insert(0,"41")
-offset_sx_entry.grid(row=0, column=1)
+offset_sx_entry = Entry(root); offset_sx_entry.insert(0,"50"); offset_sx_entry.grid(row=0, column=1)
 
 Label(root, text="Offset pedana DX").grid(row=1, column=0)
-offset_dx_entry = Entry(root)
-offset_dx_entry.insert(0,"50")
-offset_dx_entry.grid(row=1, column=1)
+offset_dx_entry = Entry(root); offset_dx_entry.insert(0,"40"); offset_dx_entry.grid(row=1, column=1)
 
 Label(root, text="Soglia volo (N)").grid(row=2, column=0)
-soglia_entry = Entry(root)
-soglia_entry.insert(0,"5")
-soglia_entry.grid(row=2, column=1)
+soglia_entry = Entry(root); soglia_entry.insert(0,"5"); soglia_entry.grid(row=2, column=1)
 
 Label(root, text="Durata minima volo (s)").grid(row=3, column=0)
-durata_entry = Entry(root)
-durata_entry.insert(0,"0.5")
-durata_entry.grid(row=3, column=1)
+durata_entry = Entry(root); durata_entry.insert(0,"0.5"); durata_entry.grid(row=3, column=1)
 
 Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=4, column=0, columnspan=2, pady=10)
-
 root.mainloop()
