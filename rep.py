@@ -1,33 +1,31 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import linregress
-from tkinter import Tk, Label, Entry, Button, filedialog
+from tkinter import Tk, Label, Entry, Button, filedialog, Text, Frame
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import os
 
 # ============================
 # FUNZIONI DI CALCOLO
 # ============================
 
 def load_pedana(file):
-    df = pd.read_csv(file, sep=",", header=None, comment="#", engine="python", skip_blank_lines=True, on_bad_lines="skip")
+    df = pd.read_csv(file, sep=",", header=None, comment="#", engine="python",
+                     skip_blank_lines=True, on_bad_lines="skip")
     df = df.iloc[:, :3]
     df.columns = ["time", "pedana_sinistra", "pedana_destra"]
     return df
-
 
 def preprocess(df, offset_sx=0, offset_dx=0, soglia_contatto=3):
     df = df.copy()
     df["pedana_sinistra_cor"] = (df["pedana_sinistra"] - offset_sx).clip(lower=0)
     df["pedana_destra_cor"]   = (df["pedana_destra"] - offset_dx).clip(lower=0)
-
     df["pedana_sinistra_cor"] = df["pedana_sinistra_cor"].where(df["pedana_sinistra_cor"]>soglia_contatto, 0)
     df["pedana_destra_cor"]   = df["pedana_destra_cor"].where(df["pedana_destra_cor"]>soglia_contatto, 0)
-
     df["forza_tot"] = df["pedana_sinistra_cor"] + df["pedana_destra_cor"]
     df['time_s'] = df['time'] / 1000  # ms -> s
     return df
-
 
 def detect_flight_phase(df, soglia=5, durata_min=0.5):
     df = df.copy()
@@ -45,7 +43,6 @@ def detect_flight_phase(df, soglia=5, durata_min=0.5):
         df.loc[start_idx:len(df)-1, 'in_volo'] = True
     return df
 
-
 def compute_flight_times(df):
     intervals = []
     in_volo = df['in_volo'].values
@@ -60,15 +57,13 @@ def compute_flight_times(df):
         intervals.append((start, len(df)-1))
     return [(df['time_s'].iloc[end] - df['time_s'].iloc[start]) for start,end in intervals]
 
-
 def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, massa=66, finestra_media=3):
     df = df.copy()
     df['forza_filt'] = df['forza_tot'].rolling(finestra_media, center=True, min_periods=1).mean()
-
     df = detect_flight_phase(df, soglia_volo, durata_min)
 
     onset_idx = df[df['forza_filt'] < baseline - delta].index
-    idx_onset = onset_idx[0] if len(onset_idx)>0 else 0
+    idx_onset = onset_idx[0] if len(onset_idx) > 0 else 0
 
     mask_spinta = (df.index > idx_onset) & (df['forza_filt'] > baseline + delta)
     idx_spinta = df.index[mask_spinta][0] if mask_spinta.any() else idx_onset
@@ -85,14 +80,8 @@ def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, m
     Fmax = df.loc[idx_spinta:idx_takeoff, 'forza_filt'].max()
     impulso = np.trapz(df.loc[idx_spinta:idx_takeoff, 'forza_filt'] - baseline,
                         df.loc[idx_spinta:idx_takeoff, 'time_s'])
-    Pmax = Fmax * (impulso / massa) / tempo_spinta if tempo_spinta>0 else 0
-
+    Pmax = Fmax * (impulso / massa) / tempo_spinta if tempo_spinta > 0 else 0
     h = (9.81 * tempo_volo**2) / 8
-
-    df['asimmetria_%'] = 100 * (df['pedana_destra_cor'] - df['pedana_sinistra_cor']) / (
-        0.5*(df['pedana_destra_cor'] + df['pedana_sinistra_cor']) + 1e-6)
-    df['asimmetria_%'] = df['asimmetria_%'].where(df['forza_tot']>3,0)
-    asim_media = df[df['forza_tot']>3]['asimmetria_%'].mean()
 
     return {
         'tempo_eccentrico': tempo_ecc,
@@ -102,7 +91,6 @@ def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, m
         'impulso': impulso,
         'Pmax': Pmax,
         'altezza': h,
-        'asimmetria_media': asim_media,
         'df': df
     }
 
@@ -110,106 +98,137 @@ def analyze_cmj_force(df, baseline=55, delta=5, soglia_volo=5, durata_min=0.5, m
 # FUNZIONI GUI
 # ============================
 
+def update_plots(cmj, soglia_volo_val):
+    for widget in plot_frame.winfo_children():
+        widget.destroy()
+    df_plot = cmj['df']
+
+    fig, axes = plt.subplots(1, 2, figsize=(10,4))
+
+    axes[0].plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
+    axes[0].axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+    axes[0].set_xlabel('Tempo (ms)')
+    axes[0].set_ylabel('Forza (N)')
+    axes[0].set_title('Forza Totale e volo')
+    axes[0].set_ylim(bottom=0)
+    axes[0].legend()
+
+    axes[1].plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
+    axes[1].plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
+    axes[1].set_xlabel('Tempo (ms)')
+    axes[1].set_ylabel('Forza (N)')
+    axes[1].set_title('Forza Pedane')
+    axes[1].set_ylim(bottom=0)
+    axes[1].legend()
+
+    fig.tight_layout()
+    canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    canvas.draw()
+    canvas.get_tk_widget().pack()
+
 def run_analysis():
     file_path = filedialog.askopenfilename(filetypes=[("Text files","*.txt")])
     if not file_path: return
-
     try:
         offset_sx_val = float(offset_sx_entry.get())
         offset_dx_val = float(offset_dx_entry.get())
         soglia_volo_val = float(soglia_entry.get())
         durata_min_val = float(durata_entry.get())
+        massa_val = float(massa_entry.get())
     except ValueError:
         print("Inserisci valori numerici validi!")
         return
 
     df = load_pedana(file_path)
     df = preprocess(df, offset_sx_val, offset_dx_val)
-    cmj = analyze_cmj_force(df, soglia_volo=soglia_volo_val, durata_min=durata_min_val)
+    cmj = analyze_cmj_force(df, soglia_volo=soglia_volo_val, durata_min=durata_min_val, massa=massa_val)
 
-    print(f"Tempo eccentrico: {cmj['tempo_eccentrico']:.3f} s")
-    print(f"Tempo spinta: {cmj['tempo_spinta']:.3f} s")
-    print(f"Tempo volo: {cmj['tempo_volo']:.3f} s")
-    print(f"Fmax: {cmj['Fmax']:.1f} N")
-    print(f"Impulso: {cmj['impulso']:.2f} N·s")
-    print(f"Pmax: {cmj['Pmax']:.1f} W")
-    print(f"Altezza salto: {cmj['altezza']:.3f} m")
-    print(f"Asimmetria media: {cmj['asimmetria_media']:.2f} %")
+    preview_text.delete("1.0", "end")
+    preview_text.insert("end", f"File: {os.path.basename(file_path)}\n\n")
+    preview_text.insert("end", f"Tempo eccentrico (s): {cmj['tempo_eccentrico']:.3f}\n")
+    preview_text.insert("end", f"Tempo spinta (s): {cmj['tempo_spinta']:.3f}\n")
+    preview_text.insert("end", f"Tempo volo (s): {cmj['tempo_volo']:.3f}\n")
+    preview_text.insert("end", f"Fmax (N): {cmj['Fmax']:.0f}\n")
+    preview_text.insert("end", f"Impulso (N·s): {cmj['impulso']:.1f}\n")
+    preview_text.insert("end", f"Pmax (W): {cmj['Pmax']:.0f}\n")
+    preview_text.insert("end", f"Altezza salto (m): {cmj['altezza']:.3f}\n")
 
-    # Selezione file PDF
-    pdf_file = filedialog.asksaveasfilename(defaultextension='.pdf', filetypes=[('PDF files','*.pdf')])
-    if pdf_file:
-        with PdfPages(pdf_file) as pdf:
-            df_plot = cmj['df']
+    update_plots(cmj, soglia_volo_val)
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
-            plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Forza (N)')
-            plt.title('Forza Totale e volo')
-            plt.legend()
-            pdf.savefig(); plt.close()
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
-            plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Forza (N)')
-            plt.title('Forza Pedane')
-            plt.legend()
-            pdf.savefig(); plt.close()
+    pdf_file = filedialog.asksaveasfilename(
+        defaultextension=".pdf",
+        filetypes=[("PDF files","*.pdf")],
+        initialfile=f"report_{base_name}_.pdf"
+    )
+    csv_file = filedialog.asksaveasfilename(
+        defaultextension=".csv",
+        filetypes=[("CSV files","*.csv")],
+        initialfile=f"report_{base_name}_.csv"
+    )
+    if not pdf_file or not csv_file: return
 
-            plt.figure(figsize=(8,5))
-            plt.plot(df_plot['time'], df_plot['asimmetria_%'], label='Asimmetria (%)')
-            plt.axhline(0, linestyle='--', color='black')
-            plt.xlabel('Tempo (ms)')
-            plt.ylabel('Asimmetria (%)')
-            plt.title('Asimmetria Destra-Sinistra')
-            plt.legend()
-            pdf.savefig(); plt.close()
+    # ================= PDF
+    with PdfPages(pdf_file) as pdf:
+        df_plot = cmj['df']
 
-            fig, ax = plt.subplots(figsize=(10,6))
-            ax.axis('off')
-            ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
-            cmj_data = [
-                ['Parametro', 'Valore'],
-                ['Tempo eccentrico (s)', f"{cmj['tempo_eccentrico']:.3f}"],
-                ['Tempo spinta (s)', f"{cmj['tempo_spinta']:.3f}"],
-                ['Tempo volo (s)', f"{cmj['tempo_volo']:.3f}"],
-                ['Fmax (N)', f"{cmj['Fmax']:.1f}"],
-                ['Impulso (N·s)', f"{cmj['impulso']:.2f}"],
-                ['Pmax (W)', f"{cmj['Pmax']:.1f}"],
-                ['Altezza salto (m)', f"{cmj['altezza']:.3f}"],
-                ['Asimmetria media (%)', f"{cmj['asimmetria_media']:.2f}"]
-            ]
-            table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
-            table.auto_set_font_size(False)
-            table.set_fontsize(14)
-            table.scale(1.5, 2)
-            pdf.savefig(); plt.close()
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
+        plt.axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Forza (N)')
+        plt.title('Forza Totale e volo')
+        plt.legend()
+        plt.ylim(bottom=0)
+        pdf.savefig(); plt.close()
 
-    # Selezione file CSV
-    csv_file = filedialog.asksaveasfilename(defaultextension='.csv', filetypes=[('CSV files','*.csv')])
-    if csv_file:
-        cmj_df = pd.DataFrame({
-            'Parametro': ['Tempo eccentrico (s)', 'Tempo spinta (s)', 'Tempo volo (s)', 'Fmax (N)', 'Impulso (N·s)', 'Pmax (W)', 'Altezza salto (m)', 'Asimmetria media (%)'],
-            'Valore': [
-                f"{cmj['tempo_eccentrico']:.3f}",
-                f"{cmj['tempo_spinta']:.3f}",
-                f"{cmj['tempo_volo']:.3f}",
-                f"{cmj['Fmax']:.1f}",
-                f"{cmj['impulso']:.2f}",
-                f"{cmj['Pmax']:.1f}",
-                f"{cmj['altezza']:.3f}",
-                f"{cmj['asimmetria_media']:.2f}"
-            ]
-        })
-        cmj_df.to_csv(csv_file, index=False)
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['pedana_sinistra_cor'], label='SX')
+        plt.plot(df_plot['pedana_destra_cor'], label='DX')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Forza (N)')
+        plt.title('Forza Pedane')
+        plt.legend()
+        plt.ylim(bottom=0)
+        pdf.savefig(); plt.close()
+
+        fig, ax = plt.subplots(figsize=(10,6))
+        ax.axis('off')
+        ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
+        cmj_data = [
+        ['Parametro', 'Valore'],
+        ['Tempo eccentrico (s)', f"{cmj['tempo_eccentrico']:.3f}"],
+        ['Tempo spinta (s)', f"{cmj['tempo_spinta']:.3f}"],
+        ['Tempo volo (s)', f"{cmj['tempo_volo']:.3f}"],
+        ['Fmax (N)', f"{cmj['Fmax']:.0f}"],
+        ['Impulso (N·s)', f"{cmj['impulso']:.1f}"],
+        ['Pmax (W)', f"{cmj['Pmax']:.0f}"],
+        ['Altezza salto (m)', f"{cmj['altezza']:.3f}"],
+        ['Massa soggetto (kg)', f"{cmj['massa']:.1f}"]  # <-- aggiunta
+    ]
+        table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
+        table.auto_set_font_size(False)
+        table.set_fontsize(14)
+        table.scale(1.5,2)
+        pdf.savefig(); plt.close()
+
+    # ================= CSV
+    df_csv = pd.DataFrame({
+        'Parametro': ['Tempo eccentrico (s)','Tempo spinta (s)','Tempo volo (s)','Fmax (N)',
+                    'Impulso (N·s)','Pmax (W)','Altezza salto (m)','Massa soggetto (kg)'],  # <-- aggiunta
+        'Valore': [f"{cmj['tempo_eccentrico']:.3f}", f"{cmj['tempo_spinta']:.3f}", f"{cmj['tempo_volo']:.3f}",
+                f"{cmj['Fmax']:.0f}", f"{cmj['impulso']:.1f}", f"{cmj['Pmax']:.0f}",
+                f"{cmj['altezza']:.3f}", f"{cmj['massa']:.1f}"]  # <-- aggiunta
+    })
+    df_csv.to_csv(csv_file, index=False)
+    print(f"Report PDF generato: {pdf_file}")
+    print(f"CSV generato: {csv_file}")
 
 # ============================
 # CREAZIONE GUI
 # ============================
+
 root = Tk()
 root.title("CMJ Analysis")
 
@@ -225,5 +244,15 @@ soglia_entry = Entry(root); soglia_entry.insert(0,"5"); soglia_entry.grid(row=2,
 Label(root, text="Durata minima volo (s)").grid(row=3, column=0)
 durata_entry = Entry(root); durata_entry.insert(0,"0.5"); durata_entry.grid(row=3, column=1)
 
-Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=4, column=0, columnspan=2, pady=10)
+Label(root, text="Peso soggetto (kg)").grid(row=4, column=0)
+massa_entry = Entry(root); massa_entry.insert(0,"66"); massa_entry.grid(row=4, column=1)
+
+Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, columnspan=2, pady=5)
+
+preview_text = Text(root, height=10, width=50)
+preview_text.grid(row=6, column=0, columnspan=2, pady=5)
+
+plot_frame = Frame(root)
+plot_frame.grid(row=7, column=0, columnspan=2, pady=5)
+
 root.mainloop()
