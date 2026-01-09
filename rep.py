@@ -219,7 +219,6 @@ def export_results():
         ax.axis('off')
         ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
         cmj_data = [
-            ['Parametro', 'Valore'],
             ['Tempo eccentrico (s)', f"{cmj_global['tempo_eccentrico']:.3f}"],
             ['Tempo spinta (s)', f"{cmj_global['tempo_spinta']:.3f}"],
             ['Tempo volo (s)', f"{cmj_global['tempo_volo']:.3f}"],
