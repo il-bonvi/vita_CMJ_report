@@ -12,6 +12,8 @@ import os
 cmj_global = None
 file_global = None
 soglia_volo_global = 5
+eccentric_start_idx = None
+concentric_start_idx = None
 
 # ============================
 # FUNZIONI DI CALCOLO
@@ -55,31 +57,30 @@ def analyze_cmj_force(df, soglia_volo=5, durata_min=0.5, massa=66, finestra_medi
     df['forza_filt'] = df['forza_tot'].rolling(finestra_media, center=True, min_periods=1).mean()
     df = detect_flight_phase(df, soglia_volo, durata_min)
 
-    # Take-off: primo indice in volo
-    takeoff_idx = df.index[df['in_volo']].min()
-    takeoff_time = df.loc[takeoff_idx, 'time_s'] if not np.isnan(takeoff_idx) else df['time_s'].iloc[-1]
+    # Take-off e landing
+    volo_idx = df[df['in_volo']].index
+    takeoff_idx = volo_idx[0] if len(volo_idx) > 0 else None
+    landing_idx = volo_idx[-1] if len(volo_idx) > 0 else None
+    takeoff_time = df.loc[takeoff_idx, 'time_s'] if takeoff_idx is not None else None
+    landing_time = df.loc[landing_idx, 'time_s'] if landing_idx is not None else None
 
-    # Landing: ultimo indice in volo
-    landing_idx = df.index[df['in_volo']].max()
-    landing_time = df.loc[landing_idx, 'time_s'] if not np.isnan(landing_idx) else df['time_s'].iloc[-1]
-
-    # Tempo di volo
-    flight_time = landing_time - takeoff_time
-
-    # Picco di forza totale **prima del take-off**
-    df_pre_takeoff = df[df.index <= takeoff_idx]
-    Fmax = df_pre_takeoff['forza_filt'].max()
-    idx_peak = df_pre_takeoff['forza_filt'].idxmax()
-    peak_time = df_pre_takeoff.loc[idx_peak, 'time_s']
+    # Picco di forza totale (prima del take-off)
+    if takeoff_idx is not None:
+        Fmax = df['forza_filt'].iloc[:takeoff_idx].max()
+        idx_peak = df['forza_filt'].iloc[:takeoff_idx].idxmax()
+        peak_time = df.loc[idx_peak, 'time_s']
+    else:
+        Fmax, peak_time = df['forza_filt'].max(), df['time_s'][df['forza_filt'].idxmax()]
 
     return {
         'Fmax': Fmax,
         'peak_time': peak_time,
-        'takeoff_time': takeoff_time,
-        'landing_time': landing_time,
-        'flight_time': flight_time,
         'df': df,
-        'massa': massa
+        'massa': massa,
+        'takeoff_idx': takeoff_idx,
+        'landing_idx': landing_idx,
+        'takeoff_time': takeoff_time,
+        'landing_time': landing_time
     }
 
 # ============================
@@ -87,22 +88,26 @@ def analyze_cmj_force(df, soglia_volo=5, durata_min=0.5, massa=66, finestra_medi
 # ============================
 
 def update_plots(cmj, soglia_volo_val):
+    global eccentric_start_idx, concentric_start_idx
     for widget in plot_frame.winfo_children():
         widget.destroy()
     df_plot = cmj['df']
 
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
 
-    # --- Forza Totale ---
     axes[0].plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
     axes[0].axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
-
-    # Linee Take-off e Landing
-    axes[0].axvline(cmj['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
-    axes[0].axvline(cmj['landing_time']*1000, color='orange', linestyle='--', label='Landing')
-
-    # Punto Fmax
+    if cmj['takeoff_time'] is not None:
+        axes[0].axvline(cmj['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
+    if cmj['landing_time'] is not None:
+        axes[0].axvline(cmj['landing_time']*1000, color='orange', linestyle='--', label='Landing')
     axes[0].scatter(cmj['peak_time']*1000, cmj['Fmax'], color='red', s=60, zorder=5, label='Fmax')
+
+    # Punti eccentrica/concentrica
+    if eccentric_start_idx is not None:
+        axes[0].axvline(df_plot.iloc[eccentric_start_idx]['time'], color='purple', linestyle='--', label='Inizio eccentrica')
+    if concentric_start_idx is not None:
+        axes[0].axvline(df_plot.iloc[concentric_start_idx]['time'], color='brown', linestyle='--', label='Inizio concentrica')
 
     axes[0].set_xlabel('Tempo (ms)')
     axes[0].set_ylabel('Forza (N)')
@@ -110,7 +115,6 @@ def update_plots(cmj, soglia_volo_val):
     axes[0].set_ylim(bottom=0)
     axes[0].legend()
 
-    # --- Forza Pedane ---
     axes[1].plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
     axes[1].plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
     axes[1].set_xlabel('Tempo (ms)')
@@ -153,10 +157,76 @@ def run_analysis():
     preview_text.insert("end", f"Tempo picco forza (s): {cmj['peak_time']:.3f}\n")
     preview_text.insert("end", f"Take-off (s): {cmj['takeoff_time']:.3f}\n")
     preview_text.insert("end", f"Landing (s): {cmj['landing_time']:.3f}\n")
-    preview_text.insert("end", f"Tempo di volo (s): {cmj['flight_time']:.3f}\n")
     preview_text.insert("end", f"Massa soggetto (kg): {cmj['massa']:.1f}\n")
 
     update_plots(cmj, soglia_volo_val)
+
+# ============================
+# Selezione manuale eccentrica/concentrica
+# ============================
+
+def pick_point(title, cmj):
+    df = cmj['df']
+    fig, ax = plt.subplots(figsize=(10,5))
+    ax.plot(df['time'], df['forza_tot'], label='Forza Totale')
+    ax.set_title(title)
+    ax.set_xlabel('Tempo (ms)')
+    ax.set_ylabel('Forza (N)')
+    plt.ylim(bottom=0)
+    point = []
+
+    # Creazione testo dinamico
+    annot = ax.annotate("", xy=(0,0), xytext=(15,15), textcoords="offset points",
+                        bbox=dict(boxstyle="round", fc="w"),
+                        arrowprops=dict(arrowstyle="->"))
+    annot.set_visible(False)
+
+    def update_annot(event):
+        if event.xdata is None or event.ydata is None: 
+            annot.set_visible(False)
+            fig.canvas.draw_idle()
+            return
+        x = event.xdata
+        idx = (np.abs(df['time'] - x)).idxmin()
+        y = df['forza_tot'].iloc[idx]
+        annot.xy = (df['time'].iloc[idx], y)
+        annot.set_text(f"Time: {df['time'].iloc[idx]:.2f} ms\nForce: {y:.1f} N")
+        annot.set_visible(True)
+        fig.canvas.draw_idle()
+
+    def onclick(event):
+        if event.xdata is not None:
+            idx = (np.abs(df['time'] - event.xdata)).idxmin()
+            point.append(idx)
+            plt.close()
+
+    fig.canvas.mpl_connect("motion_notify_event", update_annot)
+    fig.canvas.mpl_connect("button_press_event", onclick)
+    plt.show()
+
+    if point:
+        return point[0]
+    return None
+
+def select_eccentric():
+    global eccentric_start_idx, cmj_global
+    idx = pick_point("Clicca per selezionare inizio eccentrica", cmj_global)
+    if idx is not None:
+        eccentric_start_idx = idx
+        print(f"Inizio eccentrica selezionato: tempo {cmj_global['df'].iloc[idx]['time']:.2f} ms")
+        update_plots(cmj_global, soglia_volo_global)
+
+def select_concentric():
+    global concentric_start_idx, cmj_global
+    idx = pick_point("Clicca per selezionare inizio concentrica", cmj_global)
+    if idx is not None:
+        concentric_start_idx = idx
+        print(f"Inizio concentrica selezionato: tempo {cmj_global['df'].iloc[idx]['time']:.2f} ms")
+        update_plots(cmj_global, soglia_volo_global)
+
+# ============================
+# Esportazione PDF/CSV
+# ============================
 
 def export_results():
     global cmj_global, file_global, soglia_volo_global
@@ -180,31 +250,22 @@ def export_results():
 
     df_plot = cmj_global['df']
 
-    # ================= PDF
+    # PDF
     with PdfPages(pdf_file) as pdf:
-        # --- Forza Totale ---
         plt.figure(figsize=(8,5))
         plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
         plt.axhline(soglia_volo_global, color='red', linestyle='--', label='Soglia volo')
-
-        # Linee take-off e landing
-        plt.axvline(cmj_global['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
-        plt.axvline(cmj_global['landing_time']*1000, color='orange', linestyle='--', label='Landing')
-
+        if cmj_global['takeoff_time'] is not None:
+            plt.axvline(cmj_global['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
+        if cmj_global['landing_time'] is not None:
+            plt.axvline(cmj_global['landing_time']*1000, color='orange', linestyle='--', label='Landing')
+        plt.scatter(cmj_global['peak_time']*1000, cmj_global['Fmax'], color='red', s=60, zorder=5, label='Fmax')
+        if eccentric_start_idx is not None:
+            plt.axvline(df_plot.iloc[eccentric_start_idx]['time'], color='purple', linestyle='--', label='Inizio eccentrica')
+        if concentric_start_idx is not None:
+            plt.axvline(df_plot.iloc[concentric_start_idx]['time'], color='brown', linestyle='--', label='Inizio concentrica')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
-        plt.title('Forza Totale e volo')
-        plt.legend()
-        plt.ylim(bottom=0)
-        pdf.savefig(); plt.close()
-
-        # --- Pedane ---
-        plt.figure(figsize=(8,5))
-        plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
-        plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
-        plt.xlabel('Tempo (ms)')
-        plt.ylabel('Forza (N)')
-        plt.title('Forza Pedane')
         plt.legend()
         plt.ylim(bottom=0)
         pdf.savefig(); plt.close()
@@ -214,11 +275,11 @@ def export_results():
         plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
-        plt.title('Forza Pedane')
         plt.legend()
         plt.ylim(bottom=0)
         pdf.savefig(); plt.close()
 
+        # Tabella
         fig, ax = plt.subplots(figsize=(10,6))
         ax.axis('off')
         ax.set_title('Parametri CMJ', fontsize=18, fontweight='bold')
@@ -227,7 +288,6 @@ def export_results():
             ['Tempo picco forza (s)', f"{cmj_global['peak_time']:.3f}"],
             ['Take-off (s)', f"{cmj_global['takeoff_time']:.3f}"],
             ['Landing (s)', f"{cmj_global['landing_time']:.3f}"],
-            ['Tempo di volo (s)', f"{cmj_global['flight_time']:.3f}"],
             ['Massa soggetto (kg)', f"{cmj_global['massa']:.1f}"]
         ]
         table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
@@ -236,12 +296,12 @@ def export_results():
         table.scale(1.5,2)
         pdf.savefig(); plt.close()
 
-    # ================= CSV
+    # CSV
     df_csv = pd.DataFrame({
-        'Parametro': ['Fmax (N)','Tempo picco forza (s)','Take-off (s)','Landing (s)','Tempo di volo (s)','Massa soggetto (kg)'],
+        'Parametro': ['Fmax (N)','Tempo picco forza (s)','Take-off (s)','Landing (s)','Massa soggetto (kg)'],
         'Valore': [f"{cmj_global['Fmax']:.0f}", f"{cmj_global['peak_time']:.3f}",
                   f"{cmj_global['takeoff_time']:.3f}", f"{cmj_global['landing_time']:.3f}",
-                  f"{cmj_global['flight_time']:.3f}", f"{cmj_global['massa']:.1f}"]
+                  f"{cmj_global['massa']:.1f}"]
     })
     df_csv.to_csv(csv_file, index=False)
     print(f"Report PDF generato: {pdf_file}")
@@ -272,10 +332,14 @@ massa_entry = Entry(root); massa_entry.insert(0,"75"); massa_entry.grid(row=4, c
 Button(root, text="Seleziona file e calcola", command=run_analysis).grid(row=5, column=0, pady=5)
 Button(root, text="Esporta PDF/CSV", command=export_results).grid(row=5, column=1, pady=5)
 
-preview_text = Text(root, height=10, width=50)
+preview_text = Text(root, height=10, width=60)
 preview_text.grid(row=6, column=0, columnspan=2, pady=5)
 
 plot_frame = Frame(root)
 plot_frame.grid(row=7, column=0, columnspan=2, pady=5)
+
+# Pulsanti per selezione manuale eccentrica/concentrica
+Button(root, text="Seleziona inizio eccentrica", command=select_eccentric).grid(row=8, column=0, pady=5)
+Button(root, text="Seleziona inizio concentrica", command=select_concentric).grid(row=8, column=1, pady=5)
 
 root.mainloop()
