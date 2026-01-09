@@ -143,7 +143,7 @@ def update_plots(cmj, soglia_volo_val):
 
 def run_analysis():
     global cmj_global, file_global, soglia_volo_global
-    file_path = filedialog.askopenfilename(filetypes=[("Text files","*.txt")])
+    file_path = filedialog.askopenfilename(filetypes=[("Text/CSV files","*.txt;*.csv")])
     if not file_path: return
     try:
         offset_sx_val = float(offset_sx_entry.get())
