@@ -4,5 +4,5 @@ set "DEFAULT_PY=%~dp0.venv\Scripts\python.exe"
 if not exist "%DEFAULT_PY%" (
     set "DEFAULT_PY=python"
 )
-"%DEFAULT_PY%" "%~dp0csv.py"
+"%DEFAULT_PY%" "%~dp0exportercreator.py"
 pause
