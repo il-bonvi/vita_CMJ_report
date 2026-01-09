@@ -93,13 +93,16 @@ def update_plots(cmj, soglia_volo_val):
 
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
 
-    # --- Grafico Forza Totale ---
+    # --- Forza Totale ---
     axes[0].plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
     axes[0].axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
 
-    # Linee verticali take-off e landing
+    # Linee Take-off e Landing
     axes[0].axvline(cmj['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
     axes[0].axvline(cmj['landing_time']*1000, color='orange', linestyle='--', label='Landing')
+
+    # Punto Fmax
+    axes[0].scatter(cmj['peak_time']*1000, cmj['Fmax'], color='red', s=60, zorder=5, label='Fmax')
 
     axes[0].set_xlabel('Tempo (ms)')
     axes[0].set_ylabel('Forza (N)')
@@ -107,7 +110,7 @@ def update_plots(cmj, soglia_volo_val):
     axes[0].set_ylim(bottom=0)
     axes[0].legend()
 
-    # --- Grafico Pedane ---
+    # --- Forza Pedane ---
     axes[1].plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
     axes[1].plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
     axes[1].set_xlabel('Tempo (ms)')
