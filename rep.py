@@ -63,7 +63,10 @@ def analyze_cmj_force(df, soglia_volo=5, durata_min=0.5, massa=66, finestra_medi
     landing_idx = df.index[df['in_volo']].max()
     landing_time = df.loc[landing_idx, 'time_s'] if not np.isnan(landing_idx) else df['time_s'].iloc[-1]
 
-    # Picco di forza prima del take-off
+    # Tempo di volo
+    flight_time = landing_time - takeoff_time
+
+    # Picco di forza totale **prima del take-off**
     df_pre_takeoff = df[df.index <= takeoff_idx]
     Fmax = df_pre_takeoff['forza_filt'].max()
     idx_peak = df_pre_takeoff['forza_filt'].idxmax()
@@ -74,6 +77,7 @@ def analyze_cmj_force(df, soglia_volo=5, durata_min=0.5, massa=66, finestra_medi
         'peak_time': peak_time,
         'takeoff_time': takeoff_time,
         'landing_time': landing_time,
+        'flight_time': flight_time,
         'df': df,
         'massa': massa
     }
@@ -89,17 +93,21 @@ def update_plots(cmj, soglia_volo_val):
 
     fig, axes = plt.subplots(1, 2, figsize=(10,4))
 
+    # --- Grafico Forza Totale ---
     axes[0].plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
     axes[0].axhline(soglia_volo_val, color='red', linestyle='--', label='Soglia volo')
+
+    # Linee verticali take-off e landing
     axes[0].axvline(cmj['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
     axes[0].axvline(cmj['landing_time']*1000, color='orange', linestyle='--', label='Landing')
-    axes[0].scatter(cmj['peak_time']*1000, cmj['Fmax'], color='blue', zorder=5, label='Fmax (pre take-off)')
+
     axes[0].set_xlabel('Tempo (ms)')
     axes[0].set_ylabel('Forza (N)')
     axes[0].set_title('Forza Totale e volo')
     axes[0].set_ylim(bottom=0)
     axes[0].legend()
 
+    # --- Grafico Pedane ---
     axes[1].plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
     axes[1].plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
     axes[1].set_xlabel('Tempo (ms)')
@@ -142,6 +150,7 @@ def run_analysis():
     preview_text.insert("end", f"Tempo picco forza (s): {cmj['peak_time']:.3f}\n")
     preview_text.insert("end", f"Take-off (s): {cmj['takeoff_time']:.3f}\n")
     preview_text.insert("end", f"Landing (s): {cmj['landing_time']:.3f}\n")
+    preview_text.insert("end", f"Tempo di volo (s): {cmj['flight_time']:.3f}\n")
     preview_text.insert("end", f"Massa soggetto (kg): {cmj['massa']:.1f}\n")
 
     update_plots(cmj, soglia_volo_val)
@@ -170,14 +179,29 @@ def export_results():
 
     # ================= PDF
     with PdfPages(pdf_file) as pdf:
+        # --- Forza Totale ---
         plt.figure(figsize=(8,5))
         plt.plot(df_plot['time'], df_plot['forza_tot'], label='Forza Totale')
         plt.axhline(soglia_volo_global, color='red', linestyle='--', label='Soglia volo')
+
+        # Linee take-off e landing
         plt.axvline(cmj_global['takeoff_time']*1000, color='green', linestyle='--', label='Take-off')
         plt.axvline(cmj_global['landing_time']*1000, color='orange', linestyle='--', label='Landing')
+
         plt.xlabel('Tempo (ms)')
         plt.ylabel('Forza (N)')
         plt.title('Forza Totale e volo')
+        plt.legend()
+        plt.ylim(bottom=0)
+        pdf.savefig(); plt.close()
+
+        # --- Pedane ---
+        plt.figure(figsize=(8,5))
+        plt.plot(df_plot['time'], df_plot['pedana_sinistra_cor'], label='SX')
+        plt.plot(df_plot['time'], df_plot['pedana_destra_cor'], label='DX')
+        plt.xlabel('Tempo (ms)')
+        plt.ylabel('Forza (N)')
+        plt.title('Forza Pedane')
         plt.legend()
         plt.ylim(bottom=0)
         pdf.savefig(); plt.close()
@@ -200,6 +224,7 @@ def export_results():
             ['Tempo picco forza (s)', f"{cmj_global['peak_time']:.3f}"],
             ['Take-off (s)', f"{cmj_global['takeoff_time']:.3f}"],
             ['Landing (s)', f"{cmj_global['landing_time']:.3f}"],
+            ['Tempo di volo (s)', f"{cmj_global['flight_time']:.3f}"],
             ['Massa soggetto (kg)', f"{cmj_global['massa']:.1f}"]
         ]
         table = ax.table(cellText=cmj_data, loc='center', cellLoc='center', colWidths=[0.5,0.5])
@@ -210,9 +235,10 @@ def export_results():
 
     # ================= CSV
     df_csv = pd.DataFrame({
-        'Parametro': ['Fmax (N)','Tempo picco forza (s)','Take-off (s)','Landing (s)','Massa soggetto (kg)'],
+        'Parametro': ['Fmax (N)','Tempo picco forza (s)','Take-off (s)','Landing (s)','Tempo di volo (s)','Massa soggetto (kg)'],
         'Valore': [f"{cmj_global['Fmax']:.0f}", f"{cmj_global['peak_time']:.3f}",
-                  f"{cmj_global['takeoff_time']:.3f}", f"{cmj_global['landing_time']:.3f}", f"{cmj_global['massa']:.1f}"]
+                  f"{cmj_global['takeoff_time']:.3f}", f"{cmj_global['landing_time']:.3f}",
+                  f"{cmj_global['flight_time']:.3f}", f"{cmj_global['massa']:.1f}"]
     })
     df_csv.to_csv(csv_file, index=False)
     print(f"Report PDF generato: {pdf_file}")
