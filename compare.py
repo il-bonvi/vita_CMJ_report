@@ -138,7 +138,7 @@ def export_pdf():
         return
     file_path = filedialog.asksaveasfilename(defaultextension=".pdf",
                                              filetypes=[("PDF files","*.pdf")],
-                                             initialfile="report_CMJ.pdf")
+                                             initialfile="report_compare.pdf")
     if not file_path:
         return
 
